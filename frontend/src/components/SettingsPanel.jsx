@@ -1,22 +1,18 @@
 // ============================================================
 // FocusTube — SettingsPanel Component
-// Preferences: active Piped instance, playback defaults,
-// storage management. All local — nothing sent to any server.
 // ============================================================
 
 import { useState, useEffect } from 'react';
-import { getPreferences, setPreference, resetPreferences, clearSearchHistory, clearWatchLater } from '../modules/storage.js';
-import { getInstanceList, setManualInstance, clearInstance } from '../modules/instanceManager.js';
+import {
+  getPreferences, setPreference, resetPreferences,
+  clearSearchHistory, clearWatchLater, clearWatchHistory, clearDownloads,
+} from '../modules/storage.js';
 import { CONFIG } from '../config/constants.js';
 import './SettingsPanel.css';
 
 export default function SettingsPanel({ open, onClose }) {
-  const [prefs, setPrefs]           = useState(getPreferences());
-  const [activeInst, setActiveInst] = useState(
-    () => localStorage.getItem(CONFIG.STORAGE_KEYS.ACTIVE_INSTANCE) || ''
-  );
-  const [customInst, setCustomInst] = useState('');
-  const [clearMsg, setClearMsg]     = useState('');
+  const [prefs,    setPrefs]    = useState(getPreferences());
+  const [clearMsg, setClearMsg] = useState('');
 
   useEffect(() => {
     if (open) setPrefs(getPreferences());
@@ -27,44 +23,24 @@ export default function SettingsPanel({ open, onClose }) {
     setPrefs((p) => ({ ...p, [key]: value }));
   };
 
-  const handleInstanceChange = (url) => {
-    setManualInstance(url);
-    setActiveInst(url);
-  };
-
-  const handleCustomInstance = () => {
-    const url = customInst.trim().replace(/\/$/, '');
-    if (!url.startsWith('http')) return;
-    handleInstanceChange(url);
-    setCustomInst('');
-  };
-
-  const handleResetInstance = () => {
-    clearInstance();
-    setActiveInst('');
-  };
-
-  const handleClearHistory = () => {
-    clearSearchHistory();
-    setClearMsg('Search history cleared.');
+  const msg = (text) => {
+    setClearMsg(text);
     setTimeout(() => setClearMsg(''), 2500);
   };
 
-  const handleClearWatchLater = () => {
-    clearWatchLater();
-    setClearMsg('Watch Later cleared.');
-    setTimeout(() => setClearMsg(''), 2500);
-  };
+  const handleClearHistory    = () => { clearSearchHistory(); msg('Search history cleared.'); };
+  const handleClearWatchLater = () => { clearWatchLater();    msg('Watch Later cleared.'); };
+  const handleClearWatchHistory = () => { clearWatchHistory(); msg('Watch history cleared.'); };
+  const handleClearDownloads  = async () => { await clearDownloads(); msg('Downloads cleared.'); };
 
-  const handleResetAll = () => {
+  const handleResetAll = async () => {
     resetPreferences();
     clearSearchHistory();
     clearWatchLater();
-    clearInstance();
+    clearWatchHistory();
+    await clearDownloads();
     setPrefs(getPreferences());
-    setActiveInst('');
-    setClearMsg('All data reset.');
-    setTimeout(() => setClearMsg(''), 2500);
+    msg('All data reset.');
   };
 
   return (
@@ -81,50 +57,6 @@ export default function SettingsPanel({ open, onClose }) {
         </div>
 
         <div className="settings-body">
-
-          {/* Piped Instance */}
-          <section className="settings-section">
-            <h3>Piped API Instance</h3>
-            <p className="settings-desc">
-              FocusTube uses Piped to search and stream videos without ads.
-              If search is broken, switch to a different instance.
-            </p>
-            <div className="instance-list">
-              {getInstanceList().map((url) => (
-                <button
-                  key={url}
-                  className={`instance-btn ${activeInst === url ? 'active' : ''}`}
-                  onClick={() => handleInstanceChange(url)}
-                >
-                  <span className="instance-dot" />
-                  {url.replace('https://', '')}
-                  {activeInst === url && <span className="instance-active-badge">active</span>}
-                </button>
-              ))}
-            </div>
-
-            <div className="custom-instance-row">
-              <input
-                type="text"
-                placeholder="https://your-piped-instance.com"
-                value={customInst}
-                onChange={(e) => setCustomInst(e.target.value)}
-                className="custom-instance-input"
-                onKeyDown={(e) => e.key === 'Enter' && handleCustomInstance()}
-              />
-              <button className="custom-instance-btn" onClick={handleCustomInstance}>
-                Use
-              </button>
-            </div>
-
-            {activeInst && (
-              <button className="settings-link-btn" onClick={handleResetInstance}>
-                Reset to auto-select
-              </button>
-            )}
-          </section>
-
-          {/* Playback */}
           <section className="settings-section">
             <h3>Playback</h3>
             <div className="settings-row">
@@ -153,7 +85,6 @@ export default function SettingsPanel({ open, onClose }) {
             </div>
           </section>
 
-          {/* Data */}
           <section className="settings-section">
             <h3>Local Data</h3>
             <p className="settings-desc">
@@ -163,8 +94,14 @@ export default function SettingsPanel({ open, onClose }) {
               <button className="settings-danger-btn" onClick={handleClearHistory}>
                 Clear search history
               </button>
+              <button className="settings-danger-btn" onClick={handleClearWatchHistory}>
+                Clear watch history
+              </button>
               <button className="settings-danger-btn" onClick={handleClearWatchLater}>
                 Clear Watch Later
+              </button>
+              <button className="settings-danger-btn" onClick={handleClearDownloads}>
+                Clear downloads
               </button>
               <button className="settings-danger-btn danger" onClick={handleResetAll}>
                 Reset everything
@@ -172,7 +109,6 @@ export default function SettingsPanel({ open, onClose }) {
             </div>
             {clearMsg && <p className="settings-clear-msg">{clearMsg}</p>}
           </section>
-
         </div>
       </aside>
     </>

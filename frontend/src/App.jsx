@@ -1,7 +1,5 @@
 // ============================================================
 // FocusTube — App Root
-// Wires all views together. Manages top-level state:
-// current view (home/player), search state, panel visibility.
 // ============================================================
 
 import { useState, useEffect } from 'react';
@@ -10,11 +8,13 @@ import SearchBar from './components/SearchBar.jsx';
 import ResultsGrid from './components/ResultsGrid.jsx';
 import PlayerView from './components/PlayerView.jsx';
 import WatchLaterPanel from './components/WatchLaterPanel.jsx';
+import WatchHistoryPanel from './components/WatchHistoryPanel.jsx';
+import DownloadsPanel from './components/DownloadsPanel.jsx';
 import SettingsPanel from './components/SettingsPanel.jsx';
 import { useSearch } from './hooks/useSearch.js';
 import { usePlayer } from './hooks/usePlayer.js';
-import { initInstances } from './modules/instanceManager.js';
-import { getWatchLater, getPreferences } from './modules/storage.js';
+import { getWatchLater, getDownloads, addWatchHistory } from './modules/storage.js';
+import { getPreferences } from './modules/storage.js';
 import { useTheme } from './context/ThemeContext.jsx';
 import './styles/global.css';
 import './App.css';
@@ -22,49 +22,68 @@ import './App.css';
 export default function App() {
   const { setTheme } = useTheme();
 
-  // Hooks
   const { query, results, loading, error, filter, search, changeFilter, reset } = useSearch();
   const { activeVideo, view, openVideo, closeVideo, goHome } = usePlayer();
 
-  // Panels
-  const [wlOpen, setWlOpen]         = useState(false);
+  const [wlOpen,       setWlOpen]       = useState(false);
+  const [historyOpen,  setHistoryOpen]  = useState(false);
+  const [dlOpen,       setDlOpen]       = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [wlCount, setWlCount]       = useState(0);
 
-  // Init on mount
+  const [wlCount, setWlCount] = useState(0);
+  const [dlCount, setDlCount] = useState(0);
+
   useEffect(() => {
-    initInstances().catch(() => {});
     const prefs = getPreferences();
     setTheme(prefs.theme || 'warm');
     setWlCount(getWatchLater().length);
+    getDownloads().then((list) => setDlCount(list.length)).catch(() => {});
+
+    // Keep the Watch Later badge count in sync whenever any component
+    // adds or removes a video — no prop drilling required.
+    const syncWlCount = () => setWlCount(getWatchLater().length);
+    window.addEventListener('ft:watchlater-changed', syncWlCount);
+    return () => window.removeEventListener('ft:watchlater-changed', syncWlCount);
   }, []);
+
+  const handleOpenVideo = (video) => {
+    openVideo(video);
+    addWatchHistory(video);
+  };
 
   const handleSearch = (q, durationFilter) => {
     goHome();
     search(q, durationFilter);
   };
 
-  const handleLogoClick = () => {
-    goHome();
-    reset();
+  const handleLogoClick = () => { goHome(); reset(); };
+
+  const handleWlOpen = () => setWlOpen(true);
+
+  const handleDlOpen = () => {
+    getDownloads().then((list) => setDlCount(list.length)).catch(() => {});
+    setDlOpen(true);
   };
 
-  const handleWlOpen = () => {
-    setWlCount(getWatchLater().length);
-    setWlOpen(true);
+  const handleDownloadComplete = () => {
+    getDownloads().then((list) => setDlCount(list.length)).catch(() => {});
   };
 
-  const handleWlPlay = (video) => {
-    openVideo(video);
-    setWlCount(getWatchLater().length);
+  // Playing a downloaded blob — set src directly on the video element
+  // by passing a synthetic video object with a blobUrl property
+  const handlePlayDownload = (item) => {
+    handleOpenVideo({ ...item, blobUrl: item.blobUrl });
   };
 
   return (
     <div className="app">
       <Header
         onWatchLaterOpen={handleWlOpen}
+        onHistoryOpen={() => setHistoryOpen(true)}
+        onDownloadsOpen={handleDlOpen}
         onSettingsOpen={() => setSettingsOpen(true)}
         watchLaterCount={wlCount}
+        downloadsCount={dlCount}
         onLogoClick={handleLogoClick}
       />
 
@@ -85,14 +104,13 @@ export default function App() {
               loading={loading}
               error={error}
               query={query}
-              onVideoClick={openVideo}
+              onVideoClick={handleOpenVideo}
             />
           </div>
         )}
 
         {view === 'player' && activeVideo && (
           <div className="player-layout">
-            {/* Search bar stays accessible above player */}
             <div className="search-wrap search-wrap-player">
               <SearchBar
                 onSearch={handleSearch}
@@ -105,6 +123,7 @@ export default function App() {
             <PlayerView
               video={activeVideo}
               onBack={closeVideo}
+              onDownloadComplete={handleDownloadComplete}
             />
           </div>
         )}
@@ -113,7 +132,19 @@ export default function App() {
       <WatchLaterPanel
         open={wlOpen}
         onClose={() => setWlOpen(false)}
-        onPlay={handleWlPlay}
+        onPlay={handleOpenVideo}
+      />
+
+      <WatchHistoryPanel
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onPlay={handleOpenVideo}
+      />
+
+      <DownloadsPanel
+        open={dlOpen}
+        onClose={() => setDlOpen(false)}
+        onPlay={handlePlayDownload}
       />
 
       <SettingsPanel

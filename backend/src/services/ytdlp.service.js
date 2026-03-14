@@ -6,7 +6,6 @@
 // ============================================================
 
 import { spawn } from 'child_process';
-import { Readable } from 'stream';
 import { CONFIG } from '../config/constants.js';
 import { cache } from './cache.service.js';
 import { logger } from '../utils/logger.js';
@@ -54,9 +53,9 @@ const buildFormatSelector = (format, quality, audioOnly) => {
 
   const heightMap = {
     '1080p': 1080,
-    '720p': 720,
-    '480p': 480,
-    '360p': 360,
+    '720p':  720,
+    '480p':  480,
+    '360p':  360,
   };
 
   if (quality === 'best' || !heightMap[quality]) {
@@ -67,7 +66,74 @@ const buildFormatSelector = (format, quality, audioOnly) => {
   return `bestvideo[height<=${h}][ext=${format}]+bestaudio/bestvideo[height<=${h}]+bestaudio/best[height<=${h}]`;
 };
 
+/**
+ * Normalise a raw yt-dlp JSON entry into the internal video shape
+ * shared between search results and video info responses.
+ */
+const normaliseEntry = (data) => ({
+  videoId:      data.id ?? '',
+  title:        data.title ?? 'Untitled',
+  // yt-dlp returns thumbnails as an array sorted ascending by resolution.
+  // Take the last entry (highest resolution) when available.
+  thumbnail:    data.thumbnails?.at(-1)?.url ?? data.thumbnail ?? '',
+  duration:     data.duration ?? 0,
+  viewCount:    data.view_count ?? 0,
+  uploaderName: data.uploader ?? data.channel ?? '',
+  uploaderUrl:  data.uploader_url ?? data.channel_url ?? '',
+  uploadedDate: data.upload_date
+    // upload_date is YYYYMMDD — convert to a readable string
+    ? `${data.upload_date.slice(0,4)}-${data.upload_date.slice(4,6)}-${data.upload_date.slice(6,8)}`
+    : '',
+  description:  data.description ?? '',
+});
+
 // ── Public API ────────────────────────────────────────────────
+
+/**
+ * Search YouTube via yt-dlp's ytsearch extractor.
+ * Returns up to `limit` normalised video objects.
+ * Results are NOT cached — queries vary too widely.
+ */
+export const searchVideos = async (query, limit = 20) => {
+  const cacheKey = `search:${query}:${limit}`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    logger.debug('Cache hit for search', { query });
+    return cached;
+  }
+
+  // ytsearch{n}:{query} tells yt-dlp to use the YouTube search extractor.
+  // --dump-json emits one JSON object per line (NDJSON).
+  // --skip-download ensures no media is fetched.
+  // --flat-playlist prevents yt-dlp from expanding each result into a full
+  //   video info fetch, keeping search fast.
+  const raw = await runYtDlp([
+    `ytsearch${limit}:${query}`,
+    '--dump-json',
+    '--skip-download',
+    '--flat-playlist',
+    '--no-warnings',
+  ]);
+
+  // yt-dlp outputs one JSON object per line for playlist/search results.
+  const results = raw
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .map(normaliseEntry)
+    // Drop entries with no videoId — malformed results
+    .filter((v) => v.videoId);
+
+  cache.set(cacheKey, results);
+  return results;
+};
 
 /**
  * Get video metadata (title, duration, formats, thumbnail).
@@ -93,20 +159,19 @@ export const getVideoInfo = async (videoId) => {
 
   const info = {
     videoId,
-    title: data.title,
-    duration: data.duration,           // seconds
-    thumbnail: data.thumbnail,
-    uploader: data.uploader,
+    title:      data.title,
+    duration:   data.duration,
+    thumbnail:  data.thumbnails?.at(-1)?.url ?? data.thumbnail,
+    uploader:   data.uploader ?? data.channel ?? '',
     uploadDate: data.upload_date,
-    viewCount: data.view_count,
-    // Available formats for quality selector
+    viewCount:  data.view_count,
     formats: (data.formats || [])
       .filter(f => f.vcodec !== 'none' && f.height)
       .map(f => ({
         formatId: f.format_id,
-        ext: f.ext,
-        height: f.height,
-        fps: f.fps,
+        ext:      f.ext,
+        height:   f.height,
+        fps:      f.fps,
         filesize: f.filesize,
       }))
       .sort((a, b) => b.height - a.height),
@@ -128,18 +193,11 @@ export const downloadStream = (videoId, format, quality, audioOnly = false) => {
     '--no-playlist',
     '-f', formatSelector,
     '--no-part',
-    '-o', '-',             // Output to stdout — enables streaming
+    '-o', '-',
   ];
 
-  // For MP3: post-process to extract audio
   if (format === 'mp3' || audioOnly) {
     args.push('--extract-audio', '--audio-format', 'mp3');
-  }
-
-  // Use Deno as the JS runtime if available (needed for yt-dlp JS challenge)
-  if (process.env.DENO_PATH) {
-    args.unshift('--compat-options', 'no-youtube-unavailable-videos');
-    process.env.DENO_BINARY = process.env.DENO_PATH;
   }
 
   args.push(url);

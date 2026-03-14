@@ -1,44 +1,25 @@
 // ============================================================
 // FocusTube — Download Module
-// All download API calls to the backend.
-// If the backend URL changes or a new download provider is used:
-// change this file only.
+// Downloads are saved to IndexedDB (in-app) not the OS filesystem.
+// Visible in the Downloads panel. Can be played or deleted in-app.
 // ============================================================
 
 import { CONFIG } from '../config/constants.js';
-
-const isIOS = () =>
-  /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+import { saveDownload } from './storage.js';
 
 /**
- * Trigger a video/audio download.
- * On iOS: opens stream in new tab for native player + share sheet.
- * On all others: triggers browser download dialog.
+ * Download a video, save it to IndexedDB, report progress via onProgress.
+ * onProgress receives { status, percent } objects.
  */
-export const downloadVideo = async (videoId, format = 'mp4', quality = 'best', onProgress) => {
+export const downloadVideo = async (video, format = 'mp4', quality = 'best', onProgress) => {
   const base = CONFIG.BACKEND_URL;
 
-  if (isIOS()) {
-    // iOS Safari: request the stream URL and open it natively
-    const res = await fetch(`${base}/api/download`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ videoId, format, quality, iosMode: true }),
-    });
-
-    if (!res.ok) throw new Error(`Download failed: ${res.status}`);
-    const { iosStreamUrl, filename } = await res.json();
-    window.open(`${base}${iosStreamUrl}`, '_blank');
-    return { filename };
-  }
-
-  // Desktop / Android: stream directly to file download
   onProgress?.({ status: 'starting', percent: 0 });
 
   const res = await fetch(`${base}/api/download`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ videoId, format, quality }),
+    body: JSON.stringify({ videoId: video.videoId, format, quality }),
   });
 
   if (!res.ok) {
@@ -46,12 +27,7 @@ export const downloadVideo = async (videoId, format = 'mp4', quality = 'best', o
     throw new Error(err.error || `Download failed: ${res.status}`);
   }
 
-  // Extract filename from Content-Disposition header
-  const disposition = res.headers.get('Content-Disposition') || '';
-  const nameMatch = disposition.match(/filename="?([^"]+)"?/);
-  const filename = nameMatch?.[1] || `focustube_${videoId}.${format}`;
-
-  // Stream to blob — allows progress tracking
+  // Stream to blob with progress tracking
   const contentLength = res.headers.get('Content-Length');
   const total = contentLength ? parseInt(contentLength) : null;
   let loaded = 0;
@@ -66,35 +42,45 @@ export const downloadVideo = async (videoId, format = 'mp4', quality = 'best', o
     loaded += value.length;
     if (total) {
       onProgress?.({ status: 'downloading', percent: Math.round((loaded / total) * 100) });
+    } else {
+      // No content-length (chunked transfer) — pulse indeterminate progress
+      onProgress?.({ status: 'downloading', percent: -1 });
     }
   }
 
   onProgress?.({ status: 'saving', percent: 100 });
 
-  const blob = new Blob(chunks, {
-    type: format === 'mp3' ? 'audio/mpeg' : 'video/mp4',
-  });
+  const mimeType = format === 'mp3' ? 'audio/mpeg'
+                 : format === 'webm' ? 'video/webm'
+                 : 'video/mp4';
 
+  const blob = new Blob(chunks, { type: mimeType });
+
+  // Save to IndexedDB — persists across sessions
+  await saveDownload(video, blob, format, quality);
+
+  return { size: blob.size };
+};
+
+/**
+ * Create a temporary object URL for a blob and trigger browser playback
+ * or export. The caller is responsible for revoking the URL when done.
+ */
+export const createBlobUrl = (blob) => URL.createObjectURL(blob);
+
+/**
+ * Trigger a browser "Save As" export for an already-downloaded blob.
+ * Used when the user explicitly wants to export to their filesystem.
+ */
+export const exportToFilesystem = (blob, filename) => {
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
+  const a   = document.createElement('a');
+  a.href     = url;
   a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-
-  return { filename };
-};
-
-/**
- * Fetch available formats/qualities for a video from backend.
- */
-export const getVideoInfo = async (videoId) => {
-  const res = await fetch(`${CONFIG.BACKEND_URL}/api/info/${videoId}`);
-  if (!res.ok) throw new Error('Could not fetch video info');
-  const data = await res.json();
-  return data.data;
 };
 
 /**

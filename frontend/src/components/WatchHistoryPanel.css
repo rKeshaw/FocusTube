@@ -1,0 +1,6 @@
+/* WatchHistoryPanel — imports shared panel shell from DownloadsPanel.css */
+/* Panel-specific overrides only */
+
+.panel-item {
+  cursor: pointer;
+}
