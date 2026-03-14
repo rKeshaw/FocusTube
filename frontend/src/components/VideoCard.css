@@ -1,0 +1,134 @@
+/* VideoCard */
+
+.video-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s;
+  opacity: 0;
+  position: relative;
+}
+.video-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 28px var(--shadow-lg);
+  border-color: var(--accent);
+}
+
+/* Thumbnail */
+.card-thumb-wrap {
+  position: relative;
+  aspect-ratio: 16/9;
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.card-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.3s ease;
+}
+.video-card:hover .card-thumb { transform: scale(1.03); }
+
+.card-duration {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0,0,0,0.75);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 5px;
+  letter-spacing: 0.02em;
+  font-family: 'DM Sans', sans-serif;
+}
+
+/* Watch Later button */
+.card-wl-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  background: rgba(0,0,0,0.55);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.2s;
+  color: #fff;
+}
+.card-wl-btn svg { width: 16px; height: 16px; }
+.video-card:hover .card-wl-btn { opacity: 1; }
+.card-wl-btn.active {
+  opacity: 1;
+  background: var(--accent);
+}
+.card-wl-btn:hover { background: var(--accent) !important; opacity: 1 !important; }
+
+/* Info section */
+.card-info {
+  padding: 12px 14px 14px;
+}
+
+.card-title {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-bottom: 7px;
+}
+
+.card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.card-uploader {
+  font-size: 0.78rem;
+  color: var(--accent);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-views, .card-date {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+/* Mobile action sheet */
+.card-actions {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.82);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  animation: fadeIn 0.15s ease;
+}
+.card-actions button {
+  color: #fff;
+  font-size: 0.95rem;
+  font-family: 'DM Sans', sans-serif;
+  padding: 10px 24px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 8px;
+  width: 80%;
+  transition: background 0.15s;
+}
+.card-actions button:hover { background: rgba(255,255,255,0.22); }

@@ -1,0 +1,37 @@
+# ============================================================
+# FocusTube — Docker Compose
+# Runs the backend locally with one command: docker compose up
+# For production, use the Dockerfile directly on Render/Railway.
+# ============================================================
+
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: focustube-backend
+    ports:
+      - "5000:5000"
+    environment:
+      NODE_ENV: development
+      PORT: 5000
+      # Override in a .env file at the root, or set here directly
+      CORS_ORIGIN: http://localhost:5173
+      RATE_LIMIT_MAX: 50          # Relaxed for local dev
+      RATE_LIMIT_DOWNLOAD_MAX: 20
+      LOG_LEVEL: debug
+      YTDLP_PATH: yt-dlp
+      FFMPEG_PATH: ffmpeg
+    # Mount .env if it exists at project root
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
