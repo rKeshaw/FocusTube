@@ -210,3 +210,20 @@
   .player-info { flex-direction: column; }
   .download-menu { right: auto; left: 0; }
 }
+
+/* ── Embed fallback ────────────── */
+
+.player-embed {
+  width: 100%;
+  aspect-ratio: 16/9;
+  display: block;
+  border: none;
+  background: var(--player-bg);
+}
+
+.player-embed-notice {
+  margin-top: 10px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-align: center;
+}

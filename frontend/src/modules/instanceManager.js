@@ -1,104 +1,95 @@
 // ============================================================
 // FocusTube — Instance Manager
-// Manages Piped API instance health, ranking, and fallback.
-// To swap to Invidious or self-hosted: change this file only.
+// Manages Invidious API instance discovery and health checks.
+// Fetches the live instance list at runtime so it never goes stale.
+// To swap back to Piped or another provider: change this file only.
 // ============================================================
 
 import { CONFIG } from '../config/constants.js';
 
 let activeInstance = null;
 
-const pingInstance = async (baseUrl) => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CONFIG.INSTANCE_TIMEOUT_MS);
-  const start = Date.now();
+// Fetch the live Invidious instance list from the official API.
+// Returns an array of base URLs for API-enabled instances.
+const fetchInstanceList = async () => {
   try {
-    // Use /healthcheck endpoint — more reliable than /trending which is often throttled.
-    // Fall back to a known-safe search if healthcheck doesn't exist on the instance.
-    const res = await fetch(`${baseUrl}/healthcheck`, { signal: controller.signal });
-    clearTimeout(timer);
-    // 404 means the instance is alive but doesn't have /healthcheck — still usable
-    if (res.ok || res.status === 404) return Date.now() - start;
-    return null;
+    const res = await fetch(CONFIG.INVIDIOUS_INSTANCES_API, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error('instances API non-OK');
+    const data = await res.json();
+    // Response is an array of [name, {uri, api, type, ...}] pairs.
+    // Keep only instances that have the API enabled and use HTTPS.
+    return data
+      .filter(([, info]) => info.api === true && info.uri?.startsWith('https'))
+      .map(([, info]) => info.uri.replace(/\/$/, ''));
   } catch {
-    clearTimeout(timer);
-    return null;
+    console.warn('Could not fetch live Invidious instance list — using fallback.');
+    return CONFIG.INVIDIOUS_INSTANCES_FALLBACK;
   }
 };
 
-/**
- * Try a real search on the instance to fully verify it works end-to-end.
- * Used as a deeper check when all ping-based checks fail.
- */
-const trySearchInstance = async (baseUrl) => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CONFIG.INSTANCE_TIMEOUT_MS);
+// Test a single instance by running a real search.
+// Returns the URL if the instance responds correctly, null otherwise.
+const testInstance = async (baseUrl) => {
   try {
-    const res = await fetch(`${baseUrl}/search?q=test&filter=videos`, { signal: controller.signal });
-    clearTimeout(timer);
+    const res = await fetch(
+      `${baseUrl}/api/v1/search?q=test&type=video`,
+      { signal: AbortSignal.timeout(CONFIG.INSTANCE_TIMEOUT_MS) }
+    );
     if (!res.ok) return null;
     const data = await res.json();
-    // A valid Piped response always has an 'items' array
-    return Array.isArray(data.items) ? 1 : null;
+    return Array.isArray(data) ? baseUrl : null;
   } catch {
-    clearTimeout(timer);
     return null;
   }
 };
 
-// Health-check all instances in parallel, pick fastest alive one
+// Health-check all instances concurrently — first working one wins.
 export const initInstances = async () => {
-  // Try saved preference first
+  // Re-validate any saved manual preference first.
   const saved = localStorage.getItem(CONFIG.STORAGE_KEYS.ACTIVE_INSTANCE);
-  if (saved && CONFIG.PIPED_INSTANCES.includes(saved)) {
-    const ms = await pingInstance(saved);
-    if (ms !== null) {
+  if (saved) {
+    const ok = await testInstance(saved);
+    if (ok) {
       activeInstance = saved;
       return activeInstance;
     }
+    // Saved instance is dead — clear it and fall through.
+    localStorage.removeItem(CONFIG.STORAGE_KEYS.ACTIVE_INSTANCE);
   }
 
-  // Round 1: lightweight ping all instances in parallel
-  const results = await Promise.all(
-    CONFIG.PIPED_INSTANCES.map(async (url) => ({
-      url,
-      ms: await pingInstance(url),
-    }))
-  );
+  const list = await fetchInstanceList();
 
-  const alive = results
-    .filter((r) => r.ms !== null)
-    .sort((a, b) => a.ms - b.ms);
+  // Promise.any resolves with the first non-rejected result.
+  // testInstance returns null on failure, so we reject nulls explicitly.
+  const result = await Promise.any(
+    list.map((url) =>
+      testInstance(url).then((r) => {
+        if (!r) throw new Error('dead');
+        return r;
+      })
+    )
+  ).catch(() => null);
 
-  if (alive.length > 0) {
-    activeInstance = alive[0].url;
-    localStorage.setItem(CONFIG.STORAGE_KEYS.ACTIVE_INSTANCE, activeInstance);
-    return activeInstance;
+  if (!result) {
+    throw new Error(
+      'No Invidious instances are reachable. Check your connection or add a custom instance in Settings.'
+    );
   }
 
-  // Round 2: all pings failed — try a real search on each instance
-  // This handles cases where /healthcheck is blocked but the API itself works
-  console.warn('All pings failed — trying deep search check on each instance...');
-  for (const url of CONFIG.PIPED_INSTANCES) {
-    const ok = await trySearchInstance(url);
-    if (ok !== null) {
-      activeInstance = url;
-      localStorage.setItem(CONFIG.STORAGE_KEYS.ACTIVE_INSTANCE, activeInstance);
-      console.info('Instance found via deep check:', url);
-      return activeInstance;
-    }
-  }
-
-  throw new Error('No Piped instances are reachable. Check your connection or add a custom instance in Settings.');
+  activeInstance = result;
+  localStorage.setItem(CONFIG.STORAGE_KEYS.ACTIVE_INSTANCE, activeInstance);
+  return activeInstance;
 };
 
-// Get active instance, initialising if needed
+// Get the active instance URL, initialising if not yet resolved.
 export const getActiveInstance = async () => {
   if (activeInstance) return activeInstance;
-  return await initInstances();
+  return initInstances();
 };
 
-// Let user manually pin a specific instance
+// Let the user manually pin a specific instance.
 export const setManualInstance = (url) => {
   activeInstance = url;
   localStorage.setItem(CONFIG.STORAGE_KEYS.ACTIVE_INSTANCE, url);
@@ -109,4 +100,5 @@ export const clearInstance = () => {
   localStorage.removeItem(CONFIG.STORAGE_KEYS.ACTIVE_INSTANCE);
 };
 
-export const getInstanceList = () => CONFIG.PIPED_INSTANCES;
+// Used by SettingsPanel to render the instance list.
+export const getInstanceList = () => CONFIG.INVIDIOUS_INSTANCES_FALLBACK;

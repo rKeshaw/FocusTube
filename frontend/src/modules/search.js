@@ -1,101 +1,237 @@
 // ============================================================
 // FocusTube — Search Module
-// All search logic. Calls instanceManager, filters results.
-// To change the search API: change this file only.
+// Primary: Invidious API.
+// Fallback: YouTube Data API v3 (requires VITE_YOUTUBE_API_KEY).
+// Stream resolution: Invidious video endpoint, falls back to embed.
+// To change search provider: change this file only.
 // ============================================================
 
 import { getActiveInstance, initInstances } from './instanceManager.js';
 import { applyAllFilters } from './filters.js';
 import { CONFIG } from '../config/constants.js';
 
-/**
- * Normalise a raw Piped search item into our internal video shape.
- */
-const normaliseVideo = (item) => ({
-  videoId:     item.url?.replace('/watch?v=', '') ?? '',
-  title:       item.title ?? 'Untitled',
-  thumbnail:   item.thumbnail ?? '',
-  duration:    item.duration ?? 0,
-  viewCount:   item.views ?? 0,
-  uploaderName: item.uploaderName ?? '',
-  uploaderUrl:  item.uploaderUrl ?? '',
-  uploadedDate: item.uploadedDate ?? '',
-  description: item.shortDescription ?? '',
+// ── Normalisers ───────────────────────────────────────────────
+
+// Invidious search result → internal video shape
+const normaliseInvidious = (item) => ({
+  videoId:      item.videoId ?? '',
+  title:        item.title ?? 'Untitled',
+  thumbnail:    getBestInvidiousThumbnail(item.videoThumbnails),
+  duration:     item.lengthSeconds ?? 0,
+  viewCount:    item.viewCount ?? 0,
+  uploaderName: item.author ?? '',
+  uploaderUrl:  item.authorUrl ?? '',
+  uploadedDate: item.publishedText ?? '',
+  description:  item.description ?? '',
 });
 
-/**
- * Search for videos.
- * Returns filtered, normalised array of up to RESULTS_COUNT videos.
- * Retries on a fresh instance if the first attempt fails.
- */
-export const searchVideos = async (query, durationFilter = 'all') => {
-  if (!query || query.trim().length === 0) return [];
-
-  // Fetch more than we need to have headroom after filtering Shorts
-  const fetchCount = Math.min(CONFIG.RESULTS_COUNT * 2, 50);
-
-  const doSearch = async () => {
-    const instance = await getActiveInstance();
-    const url = `${instance}/search?q=${encodeURIComponent(query.trim())}&filter=videos`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Search failed: ${res.status}`);
-    const data = await res.json();
-    return (data.items ?? [])
-      .filter((item) => item.type === 'stream')
-      .map(normaliseVideo);
+// YouTube Data API v3 search result → internal video shape.
+// The search endpoint returns snippet only; duration requires a separate
+// videos endpoint call which we batch in searchYouTube below.
+const normaliseYouTube = (item, durationMap = {}) => {
+  const id = item.id?.videoId ?? '';
+  const snippet = item.snippet ?? {};
+  return {
+    videoId:      id,
+    title:        snippet.title ?? 'Untitled',
+    thumbnail:    snippet.thumbnails?.high?.url
+               ?? snippet.thumbnails?.medium?.url
+               ?? snippet.thumbnails?.default?.url
+               ?? '',
+    duration:     durationMap[id] ?? 0,
+    viewCount:    0, // not returned by search endpoint
+    uploaderName: snippet.channelTitle ?? '',
+    uploaderUrl:  '',
+    uploadedDate: snippet.publishedAt
+                  ? new Date(snippet.publishedAt).toLocaleDateString()
+                  : '',
+    description:  snippet.description ?? '',
   };
+};
 
+// Pick the highest-resolution thumbnail from Invidious's array.
+const getBestInvidiousThumbnail = (thumbs = []) => {
+  if (!thumbs || thumbs.length === 0) return '';
+  const preferred = ['maxres', 'sddefault', 'high', 'medium', 'default'];
+  for (const quality of preferred) {
+    const t = thumbs.find((t) => t.quality === quality);
+    if (t?.url) return t.url;
+  }
+  return thumbs[0]?.url ?? '';
+};
+
+// ── Invidious Search ─────────────────────────────────────────
+
+const searchInvidious = async (query) => {
+  const instance = await getActiveInstance();
+  const url = `${instance}/api/v1/search?q=${encodeURIComponent(query)}&type=video&fields=videoId,title,videoThumbnails,lengthSeconds,viewCount,author,authorUrl,publishedText,description`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  if (!res.ok) throw new Error(`Invidious search failed: ${res.status}`);
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error('Unexpected Invidious response shape');
+  return data.map(normaliseInvidious);
+};
+
+// ── YouTube Data API v3 Search ────────────────────────────────
+
+// Fetch ISO 8601 durations for a list of video IDs and convert to seconds.
+const fetchYouTubeDurations = async (videoIds) => {
+  if (!videoIds.length) return {};
+  const params = new URLSearchParams({
+    part: 'contentDetails',
+    id: videoIds.join(','),
+    key: CONFIG.YOUTUBE_API_KEY,
+  });
+  const res = await fetch(`${CONFIG.YOUTUBE_VIDEOS_URL}?${params}`, {
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) return {};
+  const data = await res.json();
+  const map = {};
+  for (const item of data.items ?? []) {
+    map[item.id] = parseISO8601Duration(item.contentDetails?.duration ?? '');
+  }
+  return map;
+};
+
+// Parse ISO 8601 duration string (PT1H2M3S) to seconds.
+const parseISO8601Duration = (iso) => {
+  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 0;
+  const h = parseInt(match[1] ?? 0);
+  const m = parseInt(match[2] ?? 0);
+  const s = parseInt(match[3] ?? 0);
+  return h * 3600 + m * 60 + s;
+};
+
+const searchYouTube = async (query) => {
+  if (!CONFIG.YOUTUBE_API_KEY) {
+    throw new Error(
+      'YouTube API key not configured. Add VITE_YOUTUBE_API_KEY to your .env file.'
+    );
+  }
+
+  const params = new URLSearchParams({
+    part: 'snippet',
+    q: query,
+    type: 'video',
+    maxResults: 25,
+    key: CONFIG.YOUTUBE_API_KEY,
+  });
+
+  const res = await fetch(`${CONFIG.YOUTUBE_SEARCH_URL}?${params}`, {
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(
+      err?.error?.message ?? `YouTube search failed: ${res.status}`
+    );
+  }
+
+  const data = await res.json();
+  const items = data.items ?? [];
+  const videoIds = items.map((i) => i.id?.videoId).filter(Boolean);
+
+  // Batch-fetch durations so we can filter Shorts and apply duration filters.
+  const durationMap = await fetchYouTubeDurations(videoIds);
+
+  return items.map((item) => normaliseYouTube(item, durationMap));
+};
+
+// ── Public: searchVideos ──────────────────────────────────────
+
+export const searchVideos = async (query, durationFilter = 'all') => {
+  if (!query?.trim()) return [];
+
+  // ── Try Invidious first ──
   try {
-    const raw = await doSearch();
+    const raw = await searchInvidious(query.trim());
     return applyAllFilters(raw, durationFilter);
-  } catch (err) {
-    // First attempt failed — clear cached instance and retry once
-    console.warn('Search failed on primary instance, retrying...', err.message);
+  } catch (invidiousErr) {
+    console.warn('Invidious search failed:', invidiousErr.message);
+
+    // Instance may have gone stale — re-rank and retry once.
     try {
-      await initInstances(); // re-rank instances
-      const raw = await doSearch();
+      await initInstances();
+      const raw = await searchInvidious(query.trim());
       return applyAllFilters(raw, durationFilter);
     } catch (retryErr) {
-      throw new Error(`Search unavailable: ${retryErr.message}`);
+      console.warn('Invidious retry failed:', retryErr.message);
     }
+  }
+
+  // ── Fall back to YouTube Data API v3 ──
+  console.info('Falling back to YouTube Data API v3.');
+  try {
+    const raw = await searchYouTube(query.trim());
+    return applyAllFilters(raw, durationFilter);
+  } catch (ytErr) {
+    // Both sources failed — surface a clear error.
+    const noKey = !CONFIG.YOUTUBE_API_KEY;
+    throw new Error(
+      noKey
+        ? 'Search unavailable: no Invidious instances reachable and no YouTube API key configured. Add VITE_YOUTUBE_API_KEY to your .env file.'
+        : `Search unavailable: ${ytErr.message}`
+    );
   }
 };
 
-/**
- * Fetch stream URLs for a videoId via Piped.
- * Returns { videoUrl, audioUrl, title, duration, hls }
- */
+// ── Public: getVideoStreams ───────────────────────────────────
+
+// Fetches stream URLs for a videoId via Invidious.
+// Returns a result object that player.js understands.
+// If Invidious fails, returns { embedFallback: true } so
+// PlayerView can render a YouTube iframe instead.
 export const getVideoStreams = async (videoId) => {
-  const instance = await getActiveInstance();
-  const res = await fetch(`${instance}/streams/${videoId}`);
-  if (!res.ok) throw new Error(`Could not fetch stream for ${videoId}`);
-  const data = await res.json();
+  // Try Invidious stream data
+  try {
+    const instance = await getActiveInstance();
+    const res = await fetch(`${instance}/api/v1/videos/${videoId}`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error(`Invidious video endpoint: ${res.status}`);
+    const data = await res.json();
 
-  // Prefer HLS for broad compatibility (required for iOS Safari)
-  // Fall back to best available video stream
-  const hlsUrl = data.hls ?? null;
+    const hlsUrl = data.hlsUrl ?? null;
 
-  // Pick best non-HLS video stream (for browsers that support DASH/MP4 directly)
-  const videoStreams = (data.videoStreams ?? [])
-    .filter((s) => s.videoOnly === false) // streams with audio included
-    .sort((a, b) => (b.quality?.replace('p', '') ?? 0) - (a.quality?.replace('p', '') ?? 0));
+    // Prefer adaptive streams that include audio (formatStreams).
+    // legacyFormats are muxed video+audio at lower quality but more compatible.
+    const muxedStreams = (data.formatStreams ?? [])
+      .map((s) => ({
+        url:      s.url,
+        quality:  s.qualityLabel ?? s.quality ?? '',
+        mimeType: s.type ?? '',
+        codec:    s.encoding ?? '',
+      }))
+      .sort((a, b) => {
+        const qa = parseInt(a.quality) || 0;
+        const qb = parseInt(b.quality) || 0;
+        return qb - qa;
+      });
 
-  const bestStream = videoStreams[0]?.url ?? null;
+    const directUrl = muxedStreams[0]?.url ?? null;
 
-  return {
-    videoId,
-    title:      data.title ?? '',
-    duration:   data.duration ?? 0,
-    thumbnail:  data.thumbnailUrl ?? '',
-    uploader:   data.uploader ?? '',
-    hlsUrl,
-    directUrl:  bestStream,
-    // Provide all streams for quality selector
-    streams: videoStreams.map((s) => ({
-      url:     s.url,
-      quality: s.quality,
-      codec:   s.codec,
-      mimeType: s.mimeType,
-    })),
-  };
+    if (!hlsUrl && !directUrl) throw new Error('No playable streams in Invidious response');
+
+    return {
+      videoId,
+      title:       data.title ?? '',
+      duration:    data.lengthSeconds ?? 0,
+      thumbnail:   getBestInvidiousThumbnail(data.videoThumbnails),
+      uploader:    data.author ?? '',
+      hlsUrl,
+      directUrl,
+      streams:     muxedStreams,
+      embedFallback: false,
+    };
+  } catch (err) {
+    console.warn('Invidious stream fetch failed — using embed fallback:', err.message);
+    // Signal to PlayerView to render a YouTube iframe.
+    return {
+      videoId,
+      embedFallback: true,
+    };
+  }
 };
